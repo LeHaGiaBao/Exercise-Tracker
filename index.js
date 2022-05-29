@@ -1,211 +1,202 @@
 const express = require('express')
-const mySecret = process.env['MONGO_URI']
 const app = express()
 const cors = require('cors')
 require('dotenv').config()
-const mongoose = require('mongoose')
-const { Schema } = mongoose;
+const bodyParser = require('body-parser');
+const mongoose = require('mongoose');
 
- const userSchema = new Schema ({
-   "username": String,
- })
-
-const exerciseSchema = new Schema({
-  "username": String,
-  "date": Date,
-  "duration": Number,
-  "description": String,
-})
-
-const logSchema = new Schema({
-  "username": String,
-  "count": Number,
-  "log": Array,
-})
-
-// Models
-const UserInfo = mongoose.model('userInfo', userSchema);
-const ExerciseInfo = mongoose.model('exerciseInfo', exerciseSchema);
-const LogInfo = mongoose.model('logInfo', logSchema);
-
-// Config
-mongoose.connect(mySecret, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true },
-  () => { console.log("Connected to MONGO BONGO DB")}
-)
-
-
-// Middlware
-app.use(express.urlencoded({ extended: false }))
-app.use(express.json())
 app.use(cors())
 app.use(express.static('public'))
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/views/index.html')
 });
 
-// Api Endpoints
+//DATABASE SETUP.
+const mySecret = process.env['MONGO_URI'];
+mongoose.connect(mySecret);
 
-  // #1
-app.post('/api/users', (req, res) => {
-  UserInfo.find({ "username": req.body.username}, (err, userData) => {
-    if (err) {
-      console.log("Error with server=> ", err)
-    } else {
-      if (userData.length === 0) {
-        const test = new UserInfo({
-          "_id": req.body.id,
-          "username": req.body.username,
-        })
+//SCHEMA.
+const excerciseLogSchema = mongoose.Schema({
+  "description": {"type": String, "required": true},
+  "duration": {"type": Number, "required": true},
+  "date": String
+});
 
-        test.save((err, data) => {
-          if (err) {
-            console.log("Error saving data=> ", err)
-          } else {
-            res.json({
-              "_id": data.id,
-              "username": data.username,
-            })
-          }
-        })
-      } else {
-        res.send("Username already Exists")
+const userRecordSchema = mongoose.Schema({
+  "username": {"type": String, "required": true},
+  "log": [excerciseLogSchema]
+});
+
+//MODEL.
+const SessionLogs = mongoose.model("SessionLogs", excerciseLogSchema);
+
+const UserRecords = mongoose.model("UserRecords", userRecordSchema);
+
+//BODY PARSER.
+app.use(bodyParser.urlencoded({extended: true}));
+app.use(bodyParser.json());
+
+//API ENDPOINT(1) - POST / api/users (collecting the username and creating a new database records).
+const apiUserPathPOST = '/api/users';
+
+app.post(apiUserPathPOST, (request, response) => {
+  const userName = request.body.username;
+
+  const newUser = new UserRecords({"username": userName});
+  newUser.save((error, userData) => {
+    if (error) return console.log(error);
+    response.json({
+      "username": userData.username,
+      "_id": userData.id
+      });
+  });
+});
+
+//API ENDPOINT(2) -  GET requests to /api/users returns an array.
+const apiUserPathGET = '/api/users';
+app.get(apiUserPathGET, (request, response) => {
+  UserRecords.find({}, (error, users) =>{
+    if (error) {
+      console.log(error);
+      response.send("Something went Wrong...")
+    }
+    response.json(users);
+  });
+});
+
+//API ENDPOINT(3) -  POST /api/users/:_id/exercises. doublecheck it later
+const apiUserExcercisePath = '/api/users/:_id/exercises';
+
+app.post(apiUserExcercisePath, (request, response) => {
+  
+  let userId = request.params;
+  let description = request.body.description;
+  let duration = request.body.duration;
+  let date = request.body.date;
+
+    //date format condition.
+    date = new Date(date).toDateString();
+
+    if (date === "" || date === "Invalid Date") {
+      const currentDate = new Date();
+      date = currentDate.toDateString();
+    }else {
+      const currentDate = new Date(date);
+      date = currentDate.toDateString();
+    }
+    
+    //New Database Record.
+    const newExcerciseRecord = new SessionLogs({
+      "description": description,
+      "duration": duration,
+      "date": date
+    });
+
+    UserRecords.findByIdAndUpdate(
+      userId, 
+      {$push: {"log": newExcerciseRecord}}, 
+      {new: true}, 
+      (error, updatedRecord) => {
+      if (error) {
+        console.log(error);
+        response.send("Something went Wrong... Check //API ENDPOINT(3)");
       }
-    }
-  })
-})
 
-  // #2
-app.post('/api/users/:_id/exercises', (req, res) => {
-  let idJson = { "id": req.params._id};
-  let checkedDate = new Date(req.body.date);
-  let idToCheck = idJson.id;
+      response.json({
+        "username": updatedRecord.username,
+        "description": newExcerciseRecord.description,
+        "duration": newExcerciseRecord.duration,
+        "date": newExcerciseRecord.date,
+        "_id": updatedRecord.id
+      });
+    });
+});
 
-  let noDateHandler = () => {
-    if (checkedDate instanceof Date && !isNaN(checkedDate)) {
-      return checkedDate
-    } else {
-      checkedDate = new Date();
-    }
-  }
+//API ENDPOINT(4) - GET request to /api/users/:_id/logs to retrieve a full exercise log of any user.
+const apiUserExcercisePathGET = '/api/users/:_id/logs';
 
-  UserInfo.findById(idToCheck, (err, data) => {
-    noDateHandler(checkedDate);
+app.get(apiUserExcercisePathGET, (request, response) => {
 
-    if (err) {
-      console.log("error with id=> ", err);
-    } else {
-      const test = new ExerciseInfo({
-        "username": data.username,
-        "description": req.body.description,
-        "duration": req.body.duration,
-        "date": checkedDate.toDateString(),
-      })
+    let userId = request.params;
+    let fromQuery = request.query.from;
+    let toQuery = request.query.to;
+    let limitQuery = request.query.limit;
 
-      test.save((err, data) => {
-        if (err) {
-          console.log("error saving=> ", err);
-        } else {
-          console.log("saved exercise successfully");
-          res.json({
-            "_id": idToCheck,
-            "username": data.username,
-            "description": data.description,
-            "duration": data.duration,
-            "date": data.date.toDateString(),
-          })
-        }
-      })
-    }
-  })
-})
+    UserRecords.findById(
+      userId, (error, result) => {
+      if (error) {
+        console.log(error);
+        response.send("Something Went wrong. Check //API ENDPOINT(4)");
+      }
+      let logs = result.log;
+      let filteredLogs = logs.map(log => {
+        
+        let des = log.description;
+        let dur = log.duration;
+        let date = log.date;
 
-  // #3
+        let userLogs = {
+          "description": des,
+          "duration": dur,
+          "date": date
+        };
+        return userLogs;
+      });
 
-app.get('/api/users/:_id/logs', (req, res) => {
-  const { from, to, limit } = req.query;
-  let idJson = { "id": req.params._id };
-  let idToCheck = idJson.id;
+      let responseObject = {};
 
-  // Check ID
-  UserInfo.findById(idToCheck, (err, data) => {
-    var query = {
-      username: data.username
-    }
-
-    if (from !== undefined && to === undefined) {
-      query.date = { $gte: new Date(from)}
-    } else if (to !== undefined && from === undefined) {
-      query.date = { $lte: new Date(to) }
-    } else if (from !== undefined && to !== undefined) {
-      query.date = { $gte: new Date(from), $lte: new Date(to)}
-    }
-
-    let limitChecker = (limit) => {
-      let maxLimit = 100;
-      if (limit) {
+      responseObject['username'] = result.username;
+      responseObject['count'] = result.log.length;
+      responseObject['_id'] = result.id;
+      responseObject['log'] = filteredLogs
+    
+    //for GET user's exercise log: GET /api/users/:_id/logs?[from][&to][&limit]
+    function objectLimiter(input) {
+        let limit = input.slice(0, limitQuery);
         return limit;
-      } else {
-        return maxLimit
       }
-    }
 
-    if (err) {
-      console.log("error with ID=> ", err)
-    } else {
-  
-      ExerciseInfo.find((query), null, {limit: limitChecker(+limit)}, (err, docs) => {
-        let loggedArray = [];
-        if (err) {
-          console.log("error with query=> ", err);
-        } else {
-  
-          let documents = docs;
-          let loggedArray = documents.map((item) => {
-            return {
-              "description": item.description,
-              "duration": item.duration,
-              "date": item.date.toDateString()
-            }
-          })
-  
-          const test = new LogInfo({
-            "username": data.username,
-            "count": loggedArray.length,
-            "log": loggedArray,
-          })
-  
-          test.save((err, data) => {
-            if (err) {
-              console.log("error saving exercise=> ", err)
-            } else {
-              console.log("saved exercise successfully");
-              res.json({
-                "_id": idToCheck,
-                "username": data.username,
-                "count": data.count,
-                "log": loggedArray
-              })
-            }
-          })
+      if (fromQuery || toQuery) {
+
+        let fromDate = new Date(0);
+        let toDate = new Date();
+
+        //convert the date input to a date string.
+        if (fromQuery) {
+          fromDate = new Date(fromQuery);
         }
-      })
-    }
-  })
-})
+        if (toQuery) {
+          toDate = new Date(toQuery);
+        }
 
-  // #4
-app.get('/api/users', (req, res) => {
-  UserInfo.find({}, (err, data) => {
-    if (err) {
-      res.send("No Users");
-    } else {
-      res.json(data);
-    }
-  })
-})
+        fromDate = fromDate.getTime();
+        toDate = toDate.getTime();
 
-const listener = app.listen(process.env.PORT || 3000, () => {
+        //filters the user's exercise log and asign it to the responseObject.
+        let logSearch = result.log.filter((session) => {
+          let sessionDate = new Date(session.date).getTime();
+          return sessionDate >= fromDate && sessionDate <= toDate;
+        });
+
+        responseObject['username'] = result.username;
+        responseObject['count'] = logSearch.length;
+        responseObject['_id'] = result.id;
+        responseObject['log'] = logSearch;
+      }
+
+      //filters/slices the log to a given log length or count. 
+      if (limitQuery) {
+        responseObject['username'] = result.username;
+        responseObject['count'] = objectLimiter(responseObject.log).length;
+        responseObject['_id'] = result.id;
+        responseObject['log'] = objectLimiter(responseObject.log);
+      }
+
+      response.json(responseObject);
+    }); 
+  });
+
+
+  const listener = app.listen(process.env.PORT || 3000, () => {
   console.log('Your app is listening on port ' + listener.address().port)
 })
